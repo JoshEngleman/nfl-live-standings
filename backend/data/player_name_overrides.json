@@ -1,0 +1,12 @@
+{
+  "_comment": "Manual player name mappings: ESPN API name -> Stokastic CSV name",
+  "_note": "Add entries here when automatic matching fails",
+
+  "Patrick Mahomes II": "Patrick Mahomes",
+  "Kenneth Walker III": "Kenneth Walker",
+  "Gabriel Davis": "Gabe Davis",
+  "Allen Robinson": "Allen Robinson II",
+  "Odell Beckham Jr.": "Odell Beckham",
+  "Marvin Harrison Jr.": "Marvin Harrison",
+  "Brian Robinson": "Brian Robinson Jr."
+}
