@@ -22,9 +22,11 @@ Track your lineup's win probability in real-time as games progress. See how ever
 
 ## 🚀 Quick Start
 
+### Backend Setup
+
 ```bash
 # Clone repository
-git clone <repo-url>
+git clone https://github.com/JoshEngleman/nfl-live-standings.git
 cd nfl-live-standings/backend
 
 # Create virtual environment
@@ -34,9 +36,24 @@ source venv/bin/activate
 # Install dependencies
 pip install -r requirements.txt
 
-# Run a simulation
-python run_simulation.py --iterations 10000
+# Start backend API
+uvicorn main:app --reload
 ```
+
+### Frontend Setup
+
+```bash
+# In a new terminal
+cd frontend
+
+# Install dependencies
+npm install
+
+# Start development server
+npm run dev
+```
+
+Access the dashboard at **http://localhost:3000**
 
 ---
 
@@ -387,23 +404,36 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed design documentati
 
 ```
 nfl-live-standings/
-├── backend/
+├── backend/                   # Python backend
 │   ├── services/              # Core business logic
 │   │   ├── simulator.py           # Monte Carlo engine ⚡
 │   │   ├── espn_api.py            # ESPN API client
 │   │   ├── prorate.py             # Pro-rating logic
 │   │   ├── live_stats_service.py  # Orchestration
-│   │   └── contest_analyzer.py    # Win rate analysis
+│   │   ├── contest_analyzer.py    # Win rate analysis
+│   │   ├── contest_state_manager.py  # State tracking
+│   │   └── live_updater_service.py   # Background automation
 │   ├── utils/                 # Utilities
 │   │   ├── csv_parser.py          # Stokastic/DK parsing
 │   │   └── player_mapper.py       # Name matching
-│   ├── tests/                 # Test suite (48 tests)
+│   ├── tests/                 # Test suite (60+ tests)
 │   ├── data/                  # Configuration
 │   │   └── player_name_overrides.json
+│   ├── main.py                # FastAPI application
 │   └── requirements.txt       # Dependencies
+├── frontend/                  # React frontend (Phase 5)
+│   ├── src/
+│   │   ├── components/        # React components
+│   │   ├── services/          # API & WebSocket clients
+│   │   ├── hooks/             # Custom React hooks
+│   │   ├── types/             # TypeScript definitions
+│   │   └── App.tsx            # Main app
+│   ├── package.json
+│   └── vite.config.ts
 ├── examples/                  # Demo scripts
 │   ├── demo_espn_live.py
-│   └── demo_contest_parser.py
+│   ├── demo_contest_parser.py
+│   └── demo_automation.py
 ├── docs/                      # Documentation
 │   ├── ARCHITECTURE.md
 │   ├── API.md
@@ -442,17 +472,19 @@ nfl-live-standings/
 - FastAPI endpoints for contest control
 - Automated live updates during games
 
+### ✅ Phase 5: Frontend (Complete)
+- React + TypeScript dashboard
+- Real-time standings table
+- WebSocket live updates
+- Updater control panel
+- Toast notifications
+- Responsive design
+
 ### 📋 Phase 4: Backend API (Next)
-- FastAPI endpoints
-- Request/response models
+- File upload endpoints
+- Full simulation API
 - Results caching
 - OpenAPI documentation
-
-### 🎨 Phase 5: Frontend
-- React dashboard
-- Real-time standings table
-- Player performance drill-down
-- Responsive design
 
 ---
 
