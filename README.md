@@ -14,7 +14,9 @@ Track your lineup's win probability in real-time as games progress. See how ever
 - **📈 Win Rate Analysis** - Calculate win probability, ROI, and expected value
 - **🏈 Contest Parser** - Extract 13,000+ lineups from DraftKings CSV exports
 - **🤖 95%+ Name Matching** - Automatic player name matching between ESPN and Stokastic
-- **✅ 48/48 Tests Passing** - Comprehensive test suite with integration tests
+- **🔄 Background Automation** - Auto-update contests every 2 minutes during live games
+- **📡 WebSocket Support** - Real-time push notifications via WebSocket
+- **✅ 60+ Tests Passing** - Comprehensive test suite with automation tests
 
 ---
 
@@ -203,6 +205,68 @@ live_scores = run_simulation(prorated_proj, adjusted_std, lineup_matrix, 10000)
 # ... analyze changes in win rates, ROI, etc.
 ```
 
+### Automation (Phase 3)
+
+```bash
+# Run automated background updates (demo)
+python examples/demo_automation.py
+```
+
+**API Server with WebSocket:**
+```bash
+# Start FastAPI server
+cd backend
+uvicorn main:app --reload
+
+# Access at http://localhost:8000
+# WebSocket at ws://localhost:8000/ws
+```
+
+**API Endpoints:**
+```bash
+# Health check
+curl http://localhost:8000/health
+
+# List all contests
+curl http://localhost:8000/api/contests
+
+# Get contest details
+curl http://localhost:8000/api/contests/{contest_id}
+
+# Start background updater (auto-updates every 2 min)
+curl -X POST http://localhost:8000/api/updater/control \
+  -H "Content-Type: application/json" \
+  -d '{"action": "start"}'
+
+# Trigger manual update immediately
+curl -X POST http://localhost:8000/api/updater/trigger
+
+# Stop background updater
+curl -X POST http://localhost:8000/api/updater/control \
+  -H "Content-Type: application/json" \
+  -d '{"action": "stop"}'
+```
+
+**WebSocket Client (JavaScript):**
+```javascript
+const ws = new WebSocket('ws://localhost:8000/ws');
+
+ws.onmessage = (event) => {
+  const data = JSON.parse(event.data);
+  console.log('Update received:', data);
+
+  if (data.type === 'contest_update') {
+    // Handle live contest update
+    console.log(`Contest ${data.contest_id} updated`);
+    console.log(`Live games: ${data.data.live_games}`);
+    console.log(`Match rate: ${data.data.match_rate}%`);
+  }
+};
+
+// Request status
+ws.send(JSON.stringify({command: 'get_status'}));
+```
+
 ---
 
 ## 📚 Documentation
@@ -371,12 +435,14 @@ nfl-live-standings/
 - Live stats orchestration
 - Integration tests
 
-### 🔄 Phase 3: Automation (Next)
+### ✅ Phase 3: Automation (Complete)
 - Background scheduler (every 2-3 minutes)
 - WebSocket for real-time updates
 - Contest state management
+- FastAPI endpoints for contest control
+- Automated live updates during games
 
-### 📋 Phase 4: Backend API
+### 📋 Phase 4: Backend API (Next)
 - FastAPI endpoints
 - Request/response models
 - Results caching

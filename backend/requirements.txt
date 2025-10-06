@@ -6,6 +6,10 @@ pandas>=2.0.0
 fastapi>=0.104.0
 uvicorn[standard]>=0.24.0
 pydantic>=2.0.0
+websockets>=12.0
+
+# Automation (Phase 3)
+apscheduler>=3.10.0
 
 # Testing
 pytest>=7.4.0
