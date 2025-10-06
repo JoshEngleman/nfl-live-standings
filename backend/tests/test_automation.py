@@ -344,12 +344,22 @@ def test_callback_registration():
     assert len(updater._update_callbacks) == 1
 
 
-def test_manual_trigger(state_manager, sample_df, sample_lineup_matrix):
+def test_manual_trigger(sample_df, sample_lineup_matrix):
     """Test manually triggering an update."""
+    from services.contest_state_manager import get_state_manager
+
     updater = LiveUpdaterService(update_interval_seconds=60, auto_start=False)
+    state_manager = get_state_manager()  # Use the singleton that updater uses
 
     # Add a contest
-    contest_id = "test_contest_1"
+    contest_id = "test_manual_trigger"
+
+    # Clean up any existing contest first
+    try:
+        state_manager.remove_contest(contest_id)
+    except KeyError:
+        pass
+
     state_manager.add_contest(
         contest_id=contest_id,
         stokastic_df=sample_df,
@@ -367,15 +377,28 @@ def test_manual_trigger(state_manager, sample_df, sample_lineup_matrix):
     assert contest_id in results
     assert 'error' not in results[contest_id] or results[contest_id].get('live_games', -1) >= 0
 
+    # Cleanup
+    state_manager.remove_contest(contest_id)
+
 
 # Integration Tests
 
-def test_full_automation_workflow(state_manager, sample_df, sample_lineup_matrix):
+def test_full_automation_workflow(sample_df, sample_lineup_matrix):
     """Test complete automation workflow."""
+    from services.contest_state_manager import get_state_manager
+
     updater = LiveUpdaterService(update_interval_seconds=60, auto_start=False)
+    state_manager = get_state_manager()  # Use the singleton
 
     # 1. Add contest
     contest_id = "integration_test"
+
+    # Clean up any existing contest first
+    try:
+        state_manager.remove_contest(contest_id)
+    except KeyError:
+        pass
+
     state_manager.add_contest(
         contest_id=contest_id,
         stokastic_df=sample_df,
@@ -408,6 +431,9 @@ def test_full_automation_workflow(state_manager, sample_df, sample_lineup_matrix
     # 6. Deactivate
     state_manager.deactivate_contest(contest_id)
     assert not state.is_active
+
+    # Cleanup
+    state_manager.remove_contest(contest_id)
 
 
 if __name__ == "__main__":

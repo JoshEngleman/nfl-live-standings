@@ -191,7 +191,7 @@ class LiveUpdaterService:
         update_duration = (datetime.now() - update_start).total_seconds()
 
         # Get match stats from live stats service
-        match_stats = self.live_stats_service.get_last_match_stats()
+        match_stats = self.live_stats_service.get_update_summary()
 
         result = {
             'contest_id': contest_id,
@@ -200,8 +200,8 @@ class LiveUpdaterService:
             'num_lineups': state.lineup_matrix.shape[0],
             'iterations': state.iterations,
             'live_games': match_stats.get('live_games', 0),
-            'players_matched': match_stats.get('matched', 0),
-            'players_unmatched': match_stats.get('unmatched', 0),
+            'players_matched': match_stats.get('players_matched', 0),
+            'players_unmatched': match_stats.get('players_unmatched', 0),
             'match_rate': match_stats.get('match_rate', 0.0)
         }
 
