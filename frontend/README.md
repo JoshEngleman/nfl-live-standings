@@ -36,7 +36,7 @@ npm install
 npm run dev
 ```
 
-This will start the frontend on **http://localhost:3000**
+This will start the frontend on **http://localhost:5173**
 
 ### Make Sure Backend is Running
 
