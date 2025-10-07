@@ -36,7 +36,7 @@ source venv/bin/activate
 # Install dependencies
 pip install -r requirements.txt
 
-# Start backend API
+# Start backend API (on port 8001)
 uvicorn main:app --reload
 ```
 

@@ -40,7 +40,7 @@ This will start the frontend on **http://localhost:5173**
 
 ### Make Sure Backend is Running
 
-The frontend requires the backend to be running on port 8000:
+The frontend requires the backend to be running on port 8001:
 
 ```bash
 # In another terminal

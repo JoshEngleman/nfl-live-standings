@@ -10,7 +10,7 @@ class WebSocketService {
   private reconnectDelay = 3000;
   private reconnectTimer: number | null = null;
 
-  connect(url: string = 'ws://localhost:8000/ws') {
+  connect(url: string = 'ws://localhost:8001/ws') {
     if (this.ws?.readyState === WebSocket.OPEN) {
       console.log('WebSocket already connected');
       return;
