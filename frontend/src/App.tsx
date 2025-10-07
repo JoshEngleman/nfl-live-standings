@@ -4,6 +4,7 @@ import { UpdaterControl } from './components/UpdaterControl';
 import { ContestList } from './components/ContestList';
 import { WebSocketStatus } from './components/WebSocketStatus';
 import { UpdateNotification } from './components/UpdateNotification';
+import { LiveStatsTest } from './components/LiveStatsTest';
 import { apiService } from './services/api';
 import { HealthStatus } from './types';
 
@@ -49,7 +50,10 @@ function App() {
                 </p>
               </div>
             </div>
-            <WebSocketStatus />
+            <div className="flex items-center gap-3">
+              <LiveStatsTest />
+              <WebSocketStatus />
+            </div>
           </div>
         </div>
       </header>

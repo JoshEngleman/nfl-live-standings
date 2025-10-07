@@ -250,6 +250,95 @@ async def trigger_manual_update():
     }
 
 
+@app.get("/api/test-live-stats")
+async def test_live_stats():
+    """
+    Test endpoint to verify ESPN API integration and live stats.
+
+    Returns live game data, player stats, and matching information.
+    """
+    from services.espn_api import ESPNStatsAPI
+    from services.live_stats_service import LiveStatsService
+    from utils.csv_parser import parse_stokastic_csv
+    from pathlib import Path
+    import pandas as pd
+
+    # Get ESPN live stats
+    api = ESPNStatsAPI()
+    live_games = api.get_live_games()
+    all_stats = api.get_all_live_stats()
+
+    # Try to load Stokastic file if available
+    stokastic_path = Path(__file__).parent.parent / "NFL DK Boom Bust.csv"
+    match_results = None
+    projection_changes = []
+
+    if stokastic_path.exists():
+        try:
+            df = parse_stokastic_csv(str(stokastic_path), slate_filter=None)
+            service = LiveStatsService()
+            prorated_proj, adjusted_std = service.get_live_projections(df)
+            match_stats = service.get_update_summary()
+
+            # Calculate biggest projection changes
+            changes = []
+            for i in range(len(df)):
+                name = df['Name'].iloc[i]
+                orig = float(df['Projection'].iloc[i])
+                live = float(prorated_proj[i])
+                diff = live - orig
+                changes.append({
+                    'name': name,
+                    'original': round(orig, 1),
+                    'live': round(live, 1),
+                    'change': round(diff, 1)
+                })
+
+            # Sort by absolute change
+            changes.sort(key=lambda x: abs(x['change']), reverse=True)
+            projection_changes = changes[:10]
+
+            match_results = match_stats
+        except Exception as e:
+            logger.error(f"Error testing live stats: {e}")
+
+    # Top scorers
+    top_scorers = []
+    if all_stats:
+        sorted_players = sorted(all_stats.items(),
+                               key=lambda x: x[1]['actual_points'],
+                               reverse=True)
+        for name, stats in sorted_players[:10]:
+            top_scorers.append({
+                'name': name,
+                'team': stats['team'],
+                'points': round(stats['actual_points'], 1),
+                'pct_remaining': round(stats['pct_remaining'] * 100, 1),
+                'is_finished': stats['is_finished']
+            })
+
+    return {
+        'espn_working': True,
+        'live_games': len(live_games),
+        'games': [
+            {
+                'away_team': g.away_team,
+                'home_team': g.home_team,
+                'away_score': g.away_score,
+                'home_score': g.home_score,
+                'quarter': g.quarter,
+                'clock': g.clock
+            }
+            for g in live_games
+        ],
+        'total_players_with_stats': len(all_stats),
+        'top_scorers': top_scorers,
+        'matching': match_results,
+        'projection_changes': projection_changes,
+        'tested_at': datetime.now().isoformat()
+    }
+
+
 # WebSocket endpoint for real-time updates
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):

@@ -69,6 +69,10 @@ class APIService {
       method: 'POST',
     });
   }
+
+  async testLiveStats(): Promise<any> {
+    return this.fetch('/api/test-live-stats');
+  }
 }
 
 export const apiService = new APIService();
