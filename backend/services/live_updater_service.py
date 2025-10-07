@@ -170,23 +170,46 @@ class LiveUpdaterService:
         )
 
         # Determine captain indices for showdown slates
-        captain_indices = None
-        if state.slate_type == 'Showdown':
-            # Captain is position 0 in each lineup
-            captain_indices = np.zeros(state.lineup_matrix.shape[0], dtype=int)
+        captain_indices = state.captain_indices if state.captain_indices is not None else None
 
-        # Run simulation with live projections
-        logger.debug(f"Running simulation for {contest_id} ({state.iterations} iterations)")
-        live_scores = run_simulation(
+        # Generate player simulations with live projections
+        from services.simulator import generate_player_simulations, calculate_lineup_scores, calculate_showdown_scores
+        from services.settings_manager import get_settings_manager
+
+        # Get current simulation settings
+        settings = get_settings_manager().get_settings()
+
+        logger.debug(f"Generating player simulations for {contest_id} ({settings.iterations} iterations, position_based={settings.use_position_based})")
+
+        # Extract positions if using position-based simulation
+        positions = None
+        if settings.use_position_based and 'Position' in state.stokastic_df.columns:
+            positions = state.stokastic_df['Position'].tolist()
+
+        player_sims = generate_player_simulations(
             projections=prorated_proj,
             std_devs=adjusted_std,
-            lineup_matrix=state.lineup_matrix,
-            iterations=state.iterations,
-            captain_indices=captain_indices
+            iterations=settings.iterations,  # Use settings
+            seed=None,
+            use_lognormal=settings.use_lognormal,  # Use settings
+            use_position_based=settings.use_position_based,  # Use settings
+            positions=positions  # Pass positions if available
         )
 
-        # Store updated scores
-        self.state_manager.update_scores(contest_id, live_scores, is_pre_game=False)
+        # Calculate lineup scores
+        logger.debug(f"Calculating lineup scores for {contest_id}")
+        if captain_indices is not None:
+            live_scores = calculate_showdown_scores(state.lineup_matrix, player_sims, captain_indices)
+        else:
+            live_scores = calculate_lineup_scores(state.lineup_matrix, player_sims)
+
+        # Store updated scores AND player simulations
+        self.state_manager.update_scores(contest_id, live_scores, player_sims=player_sims, is_pre_game=False)
+
+        # Update actual points for players
+        actual_points = self.live_stats_service.get_actual_points(state.stokastic_df)
+        if actual_points:
+            self.state_manager.update_actual_points(contest_id, actual_points)
 
         update_duration = (datetime.now() - update_start).total_seconds()
 

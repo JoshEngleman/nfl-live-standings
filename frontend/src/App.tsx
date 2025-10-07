@@ -5,6 +5,8 @@ import { ContestList } from './components/ContestList';
 import { WebSocketStatus } from './components/WebSocketStatus';
 import { UpdateNotification } from './components/UpdateNotification';
 import { LiveStatsTest } from './components/LiveStatsTest';
+import ReplayControls from './components/ReplayControls';
+import { Settings } from './components/Settings';
 import { apiService } from './services/api';
 import { HealthStatus } from './types';
 
@@ -51,6 +53,7 @@ function App() {
               </div>
             </div>
             <div className="flex items-center gap-3">
+              <Settings />
               <LiveStatsTest />
               <WebSocketStatus />
             </div>
@@ -136,6 +139,8 @@ function App() {
                 </div>
               </div>
             </div>
+
+            <ReplayControls />
 
             <ContestList />
           </>
