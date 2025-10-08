@@ -237,44 +237,46 @@ async def get_contest_lineups(
     if scores is None:
         raise HTTPException(status_code=400, detail="No simulation data available")
 
-    # Calculate average scores for all lineups
-    # scores shape: (lineups, iterations)
-    avg_scores = scores.mean(axis=1)  # Average across iterations -> (num_lineups,)
+    # Use cached statistics (pre-computed for performance)
+    avg_scores = state.cached_avg_scores
+    lineup_ranks = state.cached_ranks
+    win_rates = state.cached_win_rates
 
-    # Sort lineup indices by score (descending) to get ranks
-    sorted_indices = np.argsort(-avg_scores)  # Negative for descending
-    sorted_scores = avg_scores[sorted_indices]
+    # Fallback to recalculation if cache is missing (backward compatibility)
+    if avg_scores is None or lineup_ranks is None:
+        avg_scores = scores.mean(axis=1)
+        sorted_indices = np.argsort(-avg_scores)
+        sorted_scores = avg_scores[sorted_indices]
 
-    # Create rank mapping with tie handling
-    # Ties get the same rank, next rank skips appropriately (1, 1, 1, 4, 5...)
-    lineup_ranks = np.empty(len(sorted_indices), dtype=int)
-    current_rank = 1
-    for i in range(len(sorted_indices)):
-        if i > 0 and abs(sorted_scores[i] - sorted_scores[i-1]) < 0.01:  # Same score (within 0.01 tolerance)
-            lineup_ranks[sorted_indices[i]] = current_rank  # Same rank as previous
-        else:
-            current_rank = i + 1  # New rank (skips if there were ties)
-            lineup_ranks[sorted_indices[i]] = current_rank
+        lineup_ranks = np.empty(len(sorted_indices), dtype=int)
+        current_rank = 1
+        for i in range(len(sorted_indices)):
+            if i > 0 and abs(sorted_scores[i] - sorted_scores[i-1]) < 0.01:
+                lineup_ranks[sorted_indices[i]] = current_rank
+            else:
+                current_rank = i + 1
+                lineup_ranks[sorted_indices[i]] = current_rank
+
+    if win_rates is None:
+        max_scores_per_iteration = scores.max(axis=0)
+        win_rates = (scores >= max_scores_per_iteration).mean(axis=1)
 
     # Count duplicates per username
     username_counts = Counter(state.usernames)
 
     # Apply sorting
     if sort_by == "rank" or sort_by == "score":
-        # Already sorted by score/rank
-        display_indices = sorted_indices
+        # Sort by score (descending)
+        display_indices = np.argsort(-avg_scores)
     elif sort_by == "win_rate":
-        # Sort by win rate (calculate for all, then sort)
-        # Win rate = % of simulations where lineup has the highest score
-        max_scores_per_iteration = scores.max(axis=0)  # Max score for each iteration
-        win_rates = (scores >= max_scores_per_iteration).mean(axis=1)  # Check each lineup against max
+        # Sort by win rate (descending)
         display_indices = np.argsort(-win_rates)
     elif sort_by == "username":
         # Sort by username alphabetically
         username_order = np.argsort(state.usernames)
         display_indices = username_order
     else:
-        display_indices = sorted_indices
+        display_indices = np.argsort(-avg_scores)
 
     # Apply username filter if provided
     if username is not None and username.strip():
@@ -342,22 +344,17 @@ async def get_contest_lineups(
                 'team': player_team
             })
 
-        # Calculate win rate for this lineup
-        # Win rate = % of simulations where this lineup has the highest score
-        # scores shape: (lineups, iterations)
-        lineup_scores = scores[i, :]  # All iterations for lineup i -> (iterations,)
-        # For each iteration, check if this lineup's score is the max
-        max_scores_per_iteration = scores.max(axis=0)  # Max score across all lineups for each iteration
-        win_rate = (lineup_scores >= max_scores_per_iteration).mean()
+        # Use cached win rate and top 1% rate (pre-computed for performance)
+        win_rate = float(win_rates[i])
+        top_1pct_rate = float(state.cached_top_1pct_rates[i]) if state.cached_top_1pct_rates is not None else None
 
-        # Calculate top 1% rate
-        # Top 1% rate = % of simulations where this lineup finishes in top 1% of all lineups
-        num_lineups = scores.shape[0]
-        top_1pct_cutoff = max(1, int(num_lineups * 0.01))
-        # For each iteration, count how many lineups scored higher than this lineup (lower is better rank)
-        # rank = 1 means best lineup, so we count lineups that beat us + 1
-        ranks_per_iteration = (scores > lineup_scores).sum(axis=0) + 1  # +1 because rank starts at 1
-        top_1pct_rate = (ranks_per_iteration <= top_1pct_cutoff).mean()
+        # Fallback to recalculation if cache is missing
+        if top_1pct_rate is None:
+            num_lineups = scores.shape[0]
+            top_1pct_cutoff = max(1, int(num_lineups * 0.01))
+            lineup_scores = scores[i, :]
+            ranks_per_iteration = (scores > lineup_scores).sum(axis=0) + 1
+            top_1pct_rate = float((ranks_per_iteration <= top_1pct_cutoff).mean())
 
         # Get pre-game and live scores
         pre_game_score = float(state.pre_game_scores[i, :].mean()) if state.pre_game_scores is not None else None
@@ -637,11 +634,15 @@ async def get_portfolio_analysis(contest_id: str, username: str):
             )
             total_expected_payout += roi_metrics['expected_payout']
 
-        # Calculate top 1% rate
-        num_lineups = scores.shape[0]
-        top_1pct_cutoff = max(1, int(num_lineups * 0.01))
-        ranks_per_iteration = (scores > lineup_scores).sum(axis=0) + 1
-        top_1pct_rate = (ranks_per_iteration <= top_1pct_cutoff).mean()
+        # Use cached top 1% rate (pre-computed for performance)
+        if state.cached_top_1pct_rates is not None:
+            top_1pct_rate = float(state.cached_top_1pct_rates[idx])
+        else:
+            # Fallback to recalculation if cache is missing
+            num_lineups = scores.shape[0]
+            top_1pct_cutoff = max(1, int(num_lineups * 0.01))
+            ranks_per_iteration = (scores > lineup_scores).sum(axis=0) + 1
+            top_1pct_rate = (ranks_per_iteration <= top_1pct_cutoff).mean()
 
         # Get player indices in this lineup
         player_indices = np.where(state.lineup_matrix[idx] == 1)[0]

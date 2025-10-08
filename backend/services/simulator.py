@@ -15,19 +15,22 @@ Architecture:
 """
 
 import numpy as np
-from typing import Optional
+from typing import Optional, List
 
 
 def generate_player_simulations(
     projections: np.ndarray,
     std_devs: np.ndarray,
     iterations: int,
-    seed: Optional[int] = None
+    seed: Optional[int] = None,
+    use_lognormal: bool = False,
+    use_position_based: bool = False,
+    positions: Optional[List[str]] = None
 ) -> np.ndarray:
     """
     Generate simulation matrix for all players across all iterations.
 
-    Uses vectorized normal distribution sampling - single NumPy call generates
+    Uses vectorized distribution sampling - single NumPy call generates
     all simulations at once.
 
     Args:
@@ -35,29 +38,93 @@ def generate_player_simulations(
         std_devs: Array of std deviations, shape (num_players,)
         iterations: Number of Monte Carlo iterations
         seed: Random seed for reproducibility (None for production)
+        use_lognormal: If True, use log-normal distribution for right-skew.
+                       Creates "lottery ticket" effect for low-proj players.
+                       If False, uses normal distribution (default).
+        use_position_based: If True, use position-specific component-based modeling.
+                           Requires positions parameter. Overrides use_lognormal.
+        positions: List of position strings (e.g., ["QB", "RB", "WR"]) for each player.
+                  Required if use_position_based=True.
 
     Returns:
         Simulation matrix of shape (num_players, iterations)
         Each row is one player's simulated scores across all iterations
 
+    Log-normal distribution rationale:
+        NFL scoring is discrete and volatile. Low-projection players have
+        tight clusters with rare massive outcomes (TD lottery). High-projection
+        players have higher probability of big plays. Log-normal naturally
+        creates this right-skewed behavior.
+
+    Position-based modeling rationale:
+        Fantasy points are composite: yards + TDs + bonuses. Each component
+        has different statistical properties (discrete TDs vs continuous yards).
+        Position-specific modeling captures this structure for more realistic
+        distributions with proper discrete TD steps and boom/bust patterns.
+
     Performance: O(players × iterations) but highly optimized in NumPy.
-    Typical: 500 players × 10K iterations in ~0.1 seconds.
+    Typical: 500 players × 10K iterations in ~0.1 seconds (normal/lognormal).
+    Position-based: ~0.5-1 second (loops over players, but still fast).
     """
     if seed is not None:
         np.random.seed(seed)
 
-    # Single vectorized call generates entire matrix
-    # This is THE CORE OPERATION - do not refactor to loops
-    player_sims = np.random.normal(
-        loc=projections[:, np.newaxis],  # Broadcast across iterations
-        scale=std_devs[:, np.newaxis],
-        size=(len(projections), iterations)
-    )
+    # Position-based simulation (more accurate, slightly slower)
+    if use_position_based:
+        if positions is None:
+            raise ValueError("positions parameter required when use_position_based=True")
 
-    # Ensure no negative scores
+        from config.position_config import detect_position
+        from services.position_simulator import simulate_player_position_based
+
+        # Pre-allocate result matrix
+        player_sims = np.zeros((len(projections), iterations))
+
+        # Generate simulations for each player using position-specific model
+        for i, (proj, std, pos_str) in enumerate(zip(projections, std_devs, positions)):
+            position = detect_position(pos_str)
+            player_sims[i, :] = simulate_player_position_based(
+                projection=proj,
+                std_dev=std,
+                position=position,
+                iterations=iterations,
+                seed=seed + i if seed is not None else None  # Different seed per player
+            )
+
+        return player_sims.astype(np.float32)
+
+    if use_lognormal:
+        # Convert (mean, std) to log-normal parameters (μ, σ)
+        # Log-normal mean = exp(μ + σ²/2), std = mean × sqrt(exp(σ²) - 1)
+
+        # Avoid division by zero - use minimum projection of 0.5 FP
+        safe_proj = np.maximum(projections, 0.5)
+
+        # Coefficient of variation
+        cv = std_devs / safe_proj
+
+        # Convert to log-normal parameters
+        sigma = np.sqrt(np.log(1 + cv**2))
+        mu = np.log(safe_proj) - 0.5 * sigma**2
+
+        # Generate log-normal samples
+        player_sims = np.random.lognormal(
+            mean=mu[:, np.newaxis],
+            sigma=sigma[:, np.newaxis],
+            size=(len(projections), iterations)
+        )
+    else:
+        # Original normal distribution
+        player_sims = np.random.normal(
+            loc=projections[:, np.newaxis],  # Broadcast across iterations
+            scale=std_devs[:, np.newaxis],
+            size=(len(projections), iterations)
+        )
+
+    # Ensure no negative scores (redundant for log-normal but keeps for safety)
     player_sims = np.maximum(player_sims, 0.0)
 
-    return player_sims
+    return player_sims.astype(np.float32)
 
 
 def calculate_lineup_scores(
@@ -98,7 +165,7 @@ def calculate_lineup_scores(
     # ✅ THIS IS THE WAY - Single matrix multiplication
     scores = lineup_matrix @ player_sims
 
-    return scores
+    return scores.astype(np.float32)
 
 
 def calculate_showdown_scores(
@@ -134,7 +201,7 @@ def calculate_showdown_scores(
     # Add captain bonus - both arrays same shape (lineups × iterations)
     scores = base_scores + captain_bonus
 
-    return scores
+    return scores.astype(np.float32)
 
 
 def run_simulation(
@@ -143,7 +210,10 @@ def run_simulation(
     lineup_matrix: np.ndarray,
     iterations: int,
     captain_indices: Optional[np.ndarray] = None,
-    seed: Optional[int] = None
+    seed: Optional[int] = None,
+    use_lognormal: bool = False,
+    use_position_based: bool = False,
+    positions: Optional[List[str]] = None
 ) -> np.ndarray:
     """
     Run complete Monte Carlo simulation.
@@ -159,6 +229,9 @@ def run_simulation(
         iterations: Number of Monte Carlo iterations
         captain_indices: Optional captain indices for showdown (lineups,)
         seed: Random seed for reproducibility
+        use_lognormal: If True, use log-normal distribution for volatility modeling
+        use_position_based: If True, use position-specific component-based modeling
+        positions: List of position strings for each player (required if use_position_based=True)
 
     Returns:
         Score matrix (lineups × iterations)
@@ -166,7 +239,12 @@ def run_simulation(
     Performance target: <2 seconds for 500 players, 1000 lineups, 10K iterations
     """
     # Step 1: Generate all player simulations (players × iterations)
-    player_sims = generate_player_simulations(projections, std_devs, iterations, seed)
+    player_sims = generate_player_simulations(
+        projections, std_devs, iterations, seed,
+        use_lognormal=use_lognormal,
+        use_position_based=use_position_based,
+        positions=positions
+    )
 
     # Step 2: Calculate all lineup scores via matrix multiplication
     if captain_indices is not None:
