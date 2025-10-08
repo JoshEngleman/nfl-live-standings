@@ -119,28 +119,9 @@ class ContestState:
         max_scores_per_iteration = scores.max(axis=0)  # (iterations,)
         self.cached_win_rates = (scores >= max_scores_per_iteration).mean(axis=1)
 
-        # 4. Cache top percentile rates
-        num_lineups = scores.shape[0]
-        num_iterations = scores.shape[1]
-
-        # Top 1% cutoff
-        top_1pct_cutoff = max(1, int(num_lineups * 0.01))
-        # Top 10% cutoff
-        top_10pct_cutoff = max(1, int(num_lineups * 0.10))
-
-        # Calculate ranks per iteration
-        # For each iteration, count how many lineups beat this lineup
-        self.cached_top_1pct_rates = np.zeros(num_lineups, dtype=np.float32)
-        self.cached_top_10pct_rates = np.zeros(num_lineups, dtype=np.float32)
-
-        for lineup_idx in range(num_lineups):
-            lineup_scores = scores[lineup_idx, :]  # (iterations,)
-            # Count how many lineups beat this one in each iteration
-            ranks_per_iter = (scores > lineup_scores).sum(axis=0) + 1  # (iterations,)
-
-            # Calculate percentile rates
-            self.cached_top_1pct_rates[lineup_idx] = (ranks_per_iter <= top_1pct_cutoff).mean()
-            self.cached_top_10pct_rates[lineup_idx] = (ranks_per_iter <= top_10pct_cutoff).mean()
+        # Note: Percentile rates (top 1%, top 10%) are NOT cached here as they are
+        # expensive to compute (O(n² × iterations)). They are calculated on-demand
+        # in API endpoints when needed. This keeps update cycles fast.
 
 
 class ContestStateManager:
