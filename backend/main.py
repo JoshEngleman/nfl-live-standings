@@ -569,6 +569,365 @@ async def get_players_performance(contest_id: str, sort_by: str = "score"):
     }
 
 
+@app.get("/api/contests/{contest_id}/portfolio/{username}")
+async def get_portfolio_analysis(contest_id: str, username: str):
+    """
+    Get comprehensive portfolio analysis for a specific user.
+
+    Returns:
+        - Portfolio summary (total entries, ROI stats, win probability)
+        - All user lineups with performance metrics
+        - Player exposure analysis
+        - Stack analysis (QB+receivers, game stacks, etc.)
+    """
+    import numpy as np
+    from collections import Counter, defaultdict
+
+    state = state_manager.get_contest(contest_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail=f"Contest {contest_id} not found")
+
+    # Get scores and player sims
+    scores = state.live_scores if state.live_scores is not None else state.pre_game_scores
+    player_sims = state.live_player_sims if state.live_player_sims is not None else state.pre_game_player_sims
+
+    if scores is None or player_sims is None:
+        raise HTTPException(status_code=400, detail="No simulation data available")
+
+    # Find all lineup indices for this username
+    user_lineup_indices = [i for i, u in enumerate(state.usernames) if u == username]
+
+    if not user_lineup_indices:
+        raise HTTPException(status_code=404, detail=f"No lineups found for username '{username}'")
+
+    # ===== PORTFOLIO SUMMARY =====
+    num_entries = len(user_lineup_indices)
+    total_entry_fees = num_entries * state.entry_fee
+
+    # Calculate average scores for all lineups
+    avg_scores = scores.mean(axis=1)
+
+    # Get actual player points dict
+    actual_player_points = getattr(state, 'actual_player_points', {})
+
+    # Get user lineup scores and ROI metrics
+    user_lineups_data = []
+    total_expected_payout = 0.0
+
+    # For portfolio-level mean/median: calculate ROI for each iteration
+    num_iterations = scores.shape[1]
+    portfolio_roi_per_iteration = []
+
+    payout_structure = getattr(state, 'payout_structure', None)
+
+    for idx in user_lineup_indices:
+        lineup_scores = scores[idx, :]
+        avg_score = float(avg_scores[idx])
+
+        # Calculate ROI if payout structure exists
+        roi_metrics = None
+        if payout_structure:
+            from utils.payout_parser import calculate_roi_with_ties
+            roi_metrics = calculate_roi_with_ties(
+                scores=scores,
+                lineup_idx=idx,
+                lineup_matrix=state.lineup_matrix,
+                payout_structure=payout_structure,
+                entry_fee=state.entry_fee
+            )
+            total_expected_payout += roi_metrics['expected_payout']
+
+        # Calculate top 1% rate
+        num_lineups = scores.shape[0]
+        top_1pct_cutoff = max(1, int(num_lineups * 0.01))
+        ranks_per_iteration = (scores > lineup_scores).sum(axis=0) + 1
+        top_1pct_rate = (ranks_per_iteration <= top_1pct_cutoff).mean()
+
+        # Get player indices in this lineup
+        player_indices = np.where(state.lineup_matrix[idx] == 1)[0]
+        players_data = []
+        lineup_actual_points = 0.0
+
+        for player_idx_in_lineup, pidx in enumerate(player_indices):
+            player_row = state.stokastic_df.iloc[pidx]
+            player_name = player_row['Name']
+
+            # Get actual points for this player
+            player_actual = actual_player_points.get(player_name, 0.0)
+
+            # Check if captain (first player in showdown)
+            is_captain = (player_idx_in_lineup == 0 and state.slate_type.lower() == 'showdown')
+
+            # Apply captain multiplier
+            if is_captain:
+                lineup_actual_points += player_actual * 1.5
+            else:
+                lineup_actual_points += player_actual
+
+            players_data.append({
+                'name': player_name,
+                'position': player_row.get('Position', 'FLEX'),
+                'team': player_row.get('Team', 'Unknown'),
+                'current_score': float(player_sims[pidx, :].mean()),
+                'projection': float(player_row['Projection']),
+                'actual_points': player_actual,
+                'is_captain': is_captain
+            })
+
+        # Get projected score (pre-game)
+        projected_score = float(state.pre_game_scores[idx, :].mean()) if state.pre_game_scores is not None else None
+
+        user_lineups_data.append({
+            'lineup_index': int(idx),
+            'entry_id': state.entry_ids[idx],
+            'avg_score': avg_score,
+            'projected_score': projected_score,
+            'actual_points': round(lineup_actual_points, 2),
+            'top_1pct_rate': float(top_1pct_rate),
+            'roi_metrics': roi_metrics,
+            'players': players_data
+        })
+
+    # Calculate portfolio-level mean/median ROI per iteration (sampled for speed)
+    if payout_structure:
+        # Build payout lookup array (supports up to max rank in payout structure)
+        max_rank = max(max_r for _, max_r, _ in payout_structure)
+        payout_array = np.zeros(max_rank + 1)
+        for min_rank, max_rank, payout in payout_structure:
+            payout_array[min_rank:max_rank+1] = payout
+
+        # Sample iterations for faster calculation (use 1000 samples for good accuracy with speed)
+        sample_size = min(1000, num_iterations)
+        if sample_size < num_iterations:
+            # Use deterministic sampling based on username for consistent results
+            seed = hash(username) % (2**32)
+            rng = np.random.RandomState(seed)
+            sample_indices = rng.choice(num_iterations, size=sample_size, replace=False)
+        else:
+            sample_indices = np.arange(num_iterations)
+
+        # Get user lineup scores (num_user_lineups × sample_size)
+        user_scores = scores[user_lineup_indices, :][:, sample_indices]
+        scores_sample = scores[:, sample_indices]
+
+        # Vectorized portfolio payout calculation
+        portfolio_payouts = np.zeros(sample_size)
+
+        for idx_pos, idx in enumerate(user_lineup_indices):
+            # For this user lineup, calculate ranks across sampled iterations
+            beats_this_lineup = scores_sample > user_scores[idx_pos]
+            ranks = beats_this_lineup.sum(axis=0) + 1
+
+            # Count ties for each iteration
+            score_diffs = np.abs(scores_sample - user_scores[idx_pos])
+            ties_count = (score_diffs < 1e-9).sum(axis=0)
+
+            # Vectorized payout calculation
+            for iter_idx in range(sample_size):
+                rank = int(ranks[iter_idx])
+                num_tied = int(ties_count[iter_idx])
+                if rank + num_tied <= len(payout_array):
+                    pooled_payout = payout_array[rank:rank+num_tied].sum()
+                    portfolio_payouts[iter_idx] += pooled_payout / num_tied if num_tied > 0 else 0.0
+
+        # Calculate ROI percentage for each iteration
+        portfolio_roi_per_iteration = ((portfolio_payouts - total_entry_fees) / total_entry_fees * 100).tolist()
+
+    # Portfolio-level stats
+    total_expected_roi = total_expected_payout - total_entry_fees
+    total_expected_roi_pct = (total_expected_roi / total_entry_fees * 100) if total_entry_fees > 0 else 0.0
+
+    # Calculate mean/median from portfolio ROI distribution
+    portfolio_mean_roi = np.mean(portfolio_roi_per_iteration) if portfolio_roi_per_iteration else None
+    portfolio_median_roi = np.median(portfolio_roi_per_iteration) if portfolio_roi_per_iteration else None
+
+    # Calculate win probability (at least 1 lineup wins)
+    max_scores_per_iteration = scores.max(axis=0)
+    user_max_scores_per_iteration = scores[user_lineup_indices, :].max(axis=0)
+    portfolio_win_rate = (user_max_scores_per_iteration >= max_scores_per_iteration).mean()
+
+    # Best/worst lineups
+    best_lineup_idx = user_lineup_indices[np.argmax([avg_scores[i] for i in user_lineup_indices])]
+    worst_lineup_idx = user_lineup_indices[np.argmin([avg_scores[i] for i in user_lineup_indices])]
+
+    portfolio_summary = {
+        'username': username,
+        'total_entries': num_entries,
+        'total_entry_fees': round(total_entry_fees, 2),
+        'total_expected_payout': round(total_expected_payout, 2),
+        'total_expected_roi': round(total_expected_roi, 2),
+        'total_expected_roi_pct': round(total_expected_roi_pct, 2),
+        'mean_roi_pct': round(portfolio_mean_roi, 2) if portfolio_mean_roi is not None else None,
+        'median_roi_pct': round(portfolio_median_roi, 2) if portfolio_median_roi is not None else None,
+        'portfolio_win_rate': round(portfolio_win_rate * 100, 2),
+        'best_lineup': {
+            'entry_id': state.entry_ids[best_lineup_idx],
+            'avg_score': round(avg_scores[best_lineup_idx], 2)
+        },
+        'worst_lineup': {
+            'entry_id': state.entry_ids[worst_lineup_idx],
+            'avg_score': round(avg_scores[worst_lineup_idx], 2)
+        }
+    }
+
+    # ===== PLAYER EXPOSURE =====
+    # Count how many of user's lineups include each player
+    user_lineup_matrix = state.lineup_matrix[user_lineup_indices, :]
+    user_player_counts = user_lineup_matrix.sum(axis=0)  # How many lineups each player appears in
+    user_exposure = (user_player_counts / num_entries) * 100  # Percentage
+
+    # Calculate field exposure for comparison
+    field_exposure = (state.lineup_matrix.sum(axis=0) / state.lineup_matrix.shape[0]) * 100
+
+    # Build player exposure data for players in user's lineups
+    player_exposure_data = []
+    for idx in range(len(state.stokastic_df)):
+        if user_player_counts[idx] > 0:  # Only include players user actually used
+            player_row = state.stokastic_df.iloc[idx]
+            player_name = player_row['Name']
+            player_exposure_data.append({
+                'name': player_name,
+                'position': player_row.get('Position', 'FLEX'),
+                'team': player_row.get('Team', 'Unknown'),
+                'user_exposure': round(user_exposure[idx], 1),
+                'field_exposure': round(field_exposure[idx], 1),
+                'exposure_diff': round(user_exposure[idx] - field_exposure[idx], 1),
+                'num_lineups': int(user_player_counts[idx]),
+                'avg_score': round(player_sims[idx, :].mean(), 2),
+                'projected_score': round(float(player_row['Projection']), 2),
+                'actual_points': round(actual_player_points.get(player_name, 0.0), 2)
+            })
+
+    # Sort by user exposure descending
+    player_exposure_data.sort(key=lambda x: x['user_exposure'], reverse=True)
+
+    # ===== STACK ANALYSIS =====
+    # Find QB + pass catcher stacks (QB+1, QB+2, QB+3, QB+4)
+    qb_stacks = defaultdict(int)  # QB + 1 pass catcher
+    qb_plus_2_stacks = defaultdict(int)  # QB + 2 pass catchers
+    qb_plus_3_stacks = defaultdict(int)  # QB + 3 pass catchers
+    qb_plus_4_stacks = defaultdict(int)  # QB + 4 pass catchers
+    game_correlation_stacks = defaultdict(int)  # Team correlation (5-1, 4-2, etc)
+
+    for lineup_idx in user_lineup_indices:
+        player_indices = np.where(state.lineup_matrix[lineup_idx] == 1)[0]
+        lineup_players = []
+
+        for pidx in player_indices:
+            player_row = state.stokastic_df.iloc[pidx]
+            lineup_players.append({
+                'name': player_row['Name'],
+                'position': player_row.get('Position', 'FLEX'),
+                'team': player_row.get('Team', 'Unknown')
+            })
+
+        # Find QB + pass catcher stacks
+        qbs = [p for p in lineup_players if p['position'] == 'QB']
+        pass_catchers = [p for p in lineup_players if p['position'] in ['WR', 'TE']]
+
+        for qb in qbs:
+            qb_team = qb['team']
+            same_team_catchers = [p for p in pass_catchers if p['team'] == qb_team]
+
+            # QB + 1 (individual pairs)
+            for catcher in same_team_catchers:
+                stack_key = f"{qb['name']} + {catcher['name']}"
+                qb_stacks[stack_key] += 1
+
+            # QB + 2, QB + 3, QB + 4 (multi-receiver stacks)
+            if len(same_team_catchers) == 2:
+                catcher_names = sorted([c['name'] for c in same_team_catchers])
+                stack_key = f"{qb['name']} + {' + '.join(catcher_names)}"
+                qb_plus_2_stacks[stack_key] += 1
+
+            if len(same_team_catchers) == 3:
+                catcher_names = sorted([c['name'] for c in same_team_catchers])
+                stack_key = f"{qb['name']} + {' + '.join(catcher_names)}"
+                qb_plus_3_stacks[stack_key] += 1
+
+            if len(same_team_catchers) == 4:
+                catcher_names = sorted([c['name'] for c in same_team_catchers])
+                stack_key = f"{qb['name']} + {' + '.join(catcher_names)}"
+                qb_plus_4_stacks[stack_key] += 1
+
+        # Find game correlation stacks (team distribution)
+        team_counts = Counter([p['team'] for p in lineup_players])
+        teams = sorted(team_counts.keys())
+
+        if len(teams) == 2:  # Showdown with 2 teams
+            team1, team2 = teams
+            count1 = team_counts[team1]
+            count2 = team_counts[team2]
+
+            # Create team-specific correlation keys (e.g., "5-1 KC", "1-5 JAX")
+            correlation_key1 = f"{count1}-{count2} {team1}"
+            correlation_key2 = f"{count2}-{count1} {team2}"
+
+            # Track both perspectives
+            game_correlation_stacks[correlation_key1] += 1
+            game_correlation_stacks[correlation_key2] += 1
+
+    # Format stack data - only include if exposure is significant
+    qb_stack_data = [
+        {'stack': stack, 'count': count, 'exposure': round(count / num_entries * 100, 1)}
+        for stack, count in sorted(qb_stacks.items(), key=lambda x: x[1], reverse=True)
+    ]
+
+    qb_plus_2_data = [
+        {'stack': stack, 'count': count, 'exposure': round(count / num_entries * 100, 1)}
+        for stack, count in sorted(qb_plus_2_stacks.items(), key=lambda x: x[1], reverse=True)
+        if count / num_entries >= 0.05  # Only show if 5%+ exposure
+    ]
+
+    qb_plus_3_data = [
+        {'stack': stack, 'count': count, 'exposure': round(count / num_entries * 100, 1)}
+        for stack, count in sorted(qb_plus_3_stacks.items(), key=lambda x: x[1], reverse=True)
+        if count / num_entries >= 0.05  # Only show if 5%+ exposure
+    ]
+
+    qb_plus_4_data = [
+        {'stack': stack, 'count': count, 'exposure': round(count / num_entries * 100, 1)}
+        for stack, count in sorted(qb_plus_4_stacks.items(), key=lambda x: x[1], reverse=True)
+        if count / num_entries >= 0.05  # Only show if 5%+ exposure
+    ]
+
+    # Parse game correlations to extract team info
+    game_correlation_data = []
+    for corr, count in sorted(game_correlation_stacks.items(), key=lambda x: x[1], reverse=True):
+        # Parse "5-1 KC" into correlation="5-1" and team="KC"
+        parts = corr.rsplit(' ', 1)  # Split from right to get last word as team
+        if len(parts) == 2:
+            correlation_pattern, team = parts
+            game_correlation_data.append({
+                'correlation': correlation_pattern,
+                'team': team,
+                'count': count,
+                'exposure': round(count / num_entries * 100, 1)
+            })
+        else:
+            # Fallback for any unexpected format
+            game_correlation_data.append({
+                'correlation': corr,
+                'team': '',
+                'count': count,
+                'exposure': round(count / num_entries * 100, 1)
+            })
+
+    # ===== RETURN ALL DATA =====
+    return {
+        'contest_id': contest_id,
+        'username': username,
+        'portfolio_summary': portfolio_summary,
+        'lineups': sorted(user_lineups_data, key=lambda x: x['roi_metrics']['expected_roi_pct'] if x['roi_metrics'] else 0, reverse=True),
+        'player_exposure': player_exposure_data,
+        'qb_stacks': qb_stack_data,
+        'qb_plus_2_stacks': qb_plus_2_data,
+        'qb_plus_3_stacks': qb_plus_3_data,
+        'qb_plus_4_stacks': qb_plus_4_data,
+        'game_correlations': game_correlation_data
+    }
+
+
 @app.post("/api/contests/{contest_id}/deactivate")
 async def deactivate_contest(contest_id: str):
     """Stop monitoring a contest."""

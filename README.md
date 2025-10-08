@@ -16,6 +16,7 @@ Track your lineup's win probability in real-time as games progress. See how ever
 - **🤖 95%+ Name Matching** - Automatic player name matching between ESPN and Stokastic
 - **🔄 Background Automation** - Auto-update contests every 2 minutes during live games
 - **📡 WebSocket Support** - Real-time push notifications via WebSocket
+- **📊 Portfolio Analytics** - Analyze user lineup portfolios with exposure, stacks, and ROI distribution
 - **✅ 60+ Tests Passing** - Comprehensive test suite with automation tests
 
 ---
@@ -479,6 +480,15 @@ nfl-live-standings/
 - Updater control panel
 - Toast notifications
 - Responsive design
+
+### ✅ Phase 6: Portfolio Analytics (Complete)
+- User lineup portfolio analysis
+- Player exposure vs field analysis
+- QB stack analysis (QB+1, QB+2, QB+3, QB+4)
+- Team correlation patterns
+- Portfolio-level ROI distribution (mean/median)
+- Optimized performance with iteration sampling
+- Team-specific game stack visualization
 
 ### 📋 Phase 4: Backend API (Next)
 - File upload endpoints
