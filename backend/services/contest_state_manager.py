@@ -32,6 +32,8 @@ class ContestState:
         slate_type: 'Main' or 'Showdown'
         entry_fee: Contest entry fee
         iterations: Number of simulation iterations
+        name: User-friendly contest name
+        contest_date: Contest date (YYYY-MM-DD)
         created_at: When monitoring started
         last_update: When last updated
         update_count: Number of updates performed
@@ -53,6 +55,8 @@ class ContestState:
     slate_type: str
     entry_fee: float
     iterations: int
+    name: Optional[str] = None
+    contest_date: Optional[str] = None
     created_at: datetime = field(default_factory=datetime.now)
     last_update: Optional[datetime] = None
     update_count: int = 0
@@ -164,7 +168,9 @@ class ContestStateManager:
         usernames: List[str],
         slate_type: str,
         entry_fee: float = 10.0,
-        iterations: int = 10000
+        iterations: int = 10000,
+        name: Optional[str] = None,
+        contest_date: Optional[str] = None
     ) -> None:
         """
         Add a new contest to monitor.
@@ -178,6 +184,8 @@ class ContestStateManager:
             slate_type: 'Main' or 'Showdown'
             entry_fee: Contest entry fee (default: 10.0)
             iterations: Simulation iterations (default: 10000)
+            name: User-friendly contest name (optional)
+            contest_date: Contest date YYYY-MM-DD (optional)
 
         Raises:
             ValueError: If contest_id already exists
@@ -194,7 +202,9 @@ class ContestStateManager:
                 usernames=usernames.copy(),
                 slate_type=slate_type,
                 entry_fee=entry_fee,
-                iterations=iterations
+                iterations=iterations,
+                name=name,
+                contest_date=contest_date
             )
 
             self._contests[contest_id] = state
@@ -401,12 +411,32 @@ class ContestStateManager:
         Raises:
             KeyError: If contest_id not found
         """
+        from datetime import date as date_type
+
         state = self.get_contest(contest_id)
         if state is None:
             raise KeyError(f"Contest {contest_id} not found")
 
-        return {
+        # Determine mode based on contest_date
+        mode = None
+        if state.contest_date:
+            try:
+                contest_date_obj = datetime.strptime(state.contest_date, "%Y-%m-%d").date()
+                today = date_type.today()
+                if contest_date_obj < today:
+                    mode = "historical"
+                elif contest_date_obj == today:
+                    mode = "live"
+                else:
+                    mode = "pending"
+            except ValueError:
+                mode = None
+
+        summary = {
             'contest_id': state.contest_id,
+            'name': state.name,
+            'contest_date': state.contest_date,
+            'mode': mode,
             'slate_type': state.slate_type,
             'num_lineups': state.lineup_matrix.shape[0],
             'num_players': state.lineup_matrix.shape[1],
@@ -419,6 +449,25 @@ class ContestStateManager:
             'has_pre_game': state.pre_game_scores is not None,
             'has_live': state.live_scores is not None
         }
+
+        # Add score statistics if available (for frontend display)
+        if state.live_scores is not None:
+            summary['live_stats'] = {
+                'mean_score': float(state.live_scores.mean()),
+                'std_score': float(state.live_scores.std()),
+                'min_score': float(state.live_scores.min()),
+                'max_score': float(state.live_scores.max())
+            }
+
+        if state.pre_game_scores is not None:
+            summary['pre_game_stats'] = {
+                'mean_score': float(state.pre_game_scores.mean()),
+                'std_score': float(state.pre_game_scores.std()),
+                'min_score': float(state.pre_game_scores.min()),
+                'max_score': float(state.pre_game_scores.max())
+            }
+
+        return summary
 
     def _get_filepath(self, contest_id: str) -> Path:
         """Get the filepath for a contest's state file."""

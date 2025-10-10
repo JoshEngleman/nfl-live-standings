@@ -152,19 +152,320 @@ async def health_check():
 
 
 @app.get("/api/contests")
-async def list_contests():
-    """Get list of all monitored contests."""
+async def list_contests(mode: str = None):
+    """
+    Get list of all monitored contests from ContestStateManager.
+
+    Args:
+        mode: Filter by mode (live, historical, pending). Optional.
+
+    Returns:
+        List of contests loaded in memory with their metadata.
+    """
     all_contests = state_manager.get_all_contests()
     active_contests = state_manager.get_active_contests()
+
+    # Get all contest summaries
+    contests = [
+        state_manager.get_contest_summary(cid)
+        for cid in all_contests
+    ]
+
+    # Filter by mode if specified
+    if mode:
+        contests = [c for c in contests if c.get('mode') == mode]
 
     return {
         "total": len(all_contests),
         "active": len(active_contests),
-        "contests": [
-            state_manager.get_contest_summary(cid)
-            for cid in all_contests
-        ]
+        "count": len(contests),
+        "contests": contests
     }
+
+
+# Phase 4: Managed Contest Endpoints (must come before {contest_id} routes for proper routing)
+@app.get("/api/contests/managed")
+async def list_managed_contests(
+    status: str = None,
+    date: str = None,
+    slate_type: str = None,
+    limit: int = 100,
+    offset: int = 0
+):
+    """
+    List contests from database with filtering.
+
+    Args:
+        status: Filter by status (uploaded, loaded, active, completed, archived)
+        date: Filter by date (YYYY-MM-DD)
+        slate_type: Filter by slate type (Main, Showdown)
+        limit: Maximum results
+        offset: Pagination offset
+
+    Returns:
+        List of contests with metadata
+    """
+    # Convert string params to enums
+    status_enum = None
+    if status:
+        try:
+            status_enum = ContestStatus[status.upper()]
+        except KeyError:
+            raise HTTPException(status_code=400, detail=f"Invalid status: {status}")
+
+    slate_enum = None
+    if slate_type:
+        try:
+            slate_enum = SlateType[slate_type.upper()]
+        except KeyError:
+            raise HTTPException(status_code=400, detail=f"Invalid slate_type: {slate_type}")
+
+    contests = contest_manager.list_contests(
+        status=status_enum,
+        date=date,
+        slate_type=slate_enum,
+        limit=limit,
+        offset=offset
+    )
+
+    return {
+        "contests": [
+            {
+                "id": c.id,
+                "contest_id": c.contest_id,
+                "name": c.name,
+                "contest_date": c.contest_date,
+                "slate_type": c.slate_type.value,
+                "entry_fee": c.entry_fee,
+                "total_entries": c.total_entries,
+                "status": c.status.value,
+                "uploaded_at": c.uploaded_at.isoformat(),
+                "projection_id": c.projection_id,
+                "mode": c.mode
+            }
+            for c in contests
+        ],
+        "count": len(contests),
+        "limit": limit,
+        "offset": offset
+    }
+
+
+@app.get("/api/contests/live")
+async def list_live_contests(
+    status: str = None,
+    limit: int = 100,
+    offset: int = 0
+):
+    """
+    List live contests (contest date = today).
+
+    Args:
+        status: Filter by status (uploaded, loaded, active, completed, archived)
+        limit: Maximum results
+        offset: Pagination offset
+
+    Returns:
+        List of live contests with metadata including mode
+    """
+    from datetime import date
+    today_str = date.today().strftime("%Y-%m-%d")
+
+    # Convert string status to enum
+    status_enum = None
+    if status:
+        try:
+            status_enum = ContestStatus[status.upper()]
+        except KeyError:
+            raise HTTPException(status_code=400, detail=f"Invalid status: {status}")
+
+    contests = contest_manager.list_contests(
+        status=status_enum,
+        date=today_str,
+        limit=limit,
+        offset=offset
+    )
+
+    return {
+        "contests": [
+            {
+                "id": c.id,
+                "contest_id": c.contest_id,
+                "name": c.name,
+                "contest_date": c.contest_date,
+                "slate_type": c.slate_type.value,
+                "entry_fee": c.entry_fee,
+                "total_entries": c.total_entries,
+                "status": c.status.value,
+                "uploaded_at": c.uploaded_at.isoformat(),
+                "projection_id": c.projection_id,
+                "mode": c.mode
+            }
+            for c in contests
+        ],
+        "count": len(contests),
+        "limit": limit,
+        "offset": offset
+    }
+
+
+@app.get("/api/contests/historical")
+async def list_historical_contests(
+    status: str = None,
+    limit: int = 100,
+    offset: int = 0
+):
+    """
+    List historical contests (contest date < today).
+
+    Args:
+        status: Filter by status (uploaded, loaded, active, completed, archived)
+        limit: Maximum results
+        offset: Pagination offset
+
+    Returns:
+        List of historical contests with metadata including mode
+    """
+    from datetime import date
+
+    # Convert string status to enum
+    status_enum = None
+    if status:
+        try:
+            status_enum = ContestStatus[status.upper()]
+        except KeyError:
+            raise HTTPException(status_code=400, detail=f"Invalid status: {status}")
+
+    # Get all contests
+    all_contests = contest_manager.list_contests(
+        status=status_enum,
+        limit=1000,  # Get all, we'll filter by date
+        offset=0
+    )
+
+    # Filter to historical only (date < today)
+    today = date.today()
+    historical_contests = [
+        c for c in all_contests
+        if datetime.strptime(c.contest_date, "%Y-%m-%d").date() < today
+    ]
+
+    # Apply pagination
+    paginated = historical_contests[offset:offset + limit]
+
+    return {
+        "contests": [
+            {
+                "id": c.id,
+                "contest_id": c.contest_id,
+                "name": c.name,
+                "contest_date": c.contest_date,
+                "slate_type": c.slate_type.value,
+                "entry_fee": c.entry_fee,
+                "total_entries": c.total_entries,
+                "status": c.status.value,
+                "uploaded_at": c.uploaded_at.isoformat(),
+                "projection_id": c.projection_id,
+                "mode": c.mode
+            }
+            for c in paginated
+        ],
+        "count": len(paginated),
+        "total": len(historical_contests),
+        "limit": limit,
+        "offset": offset
+    }
+
+
+@app.get("/api/contests/managed/stats/summary")
+async def get_contest_stats():
+    """Get summary statistics for contests."""
+    return contest_manager.get_summary_stats()
+
+
+@app.get("/api/contests/managed/{contest_id}")
+async def get_managed_contest(contest_id: int):
+    """Get contest details by database ID."""
+    contest = contest_manager.get_contest(contest_id)
+    if not contest:
+        raise HTTPException(status_code=404, detail=f"Contest {contest_id} not found")
+
+    return {
+        "id": contest.id,
+        "contest_id": contest.contest_id,
+        "name": contest.name,
+        "contest_date": contest.contest_date,
+        "slate_type": contest.slate_type.value,
+        "entry_fee": contest.entry_fee,
+        "total_entries": contest.total_entries,
+        "status": contest.status.value,
+        "file_path": contest.file_path,
+        "uploaded_at": contest.uploaded_at.isoformat(),
+        "projection_id": contest.projection_id,
+        "projection": {
+            "id": contest.projection.id,
+            "name": contest.projection.name,
+            "source": contest.projection.source
+        } if contest.projection else None
+    }
+
+
+@app.delete("/api/contests/managed/{contest_id}")
+async def delete_managed_contest(contest_id: int, delete_file: bool = True):
+    """
+    Delete a contest from database.
+
+    Args:
+        contest_id: Contest database ID
+        delete_file: If true, also delete the CSV file
+    """
+    try:
+        contest_manager.delete_contest(contest_id, delete_file=delete_file)
+        return {"status": "success", "message": f"Contest {contest_id} deleted"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/contests/managed/{contest_id}/archive")
+async def archive_managed_contest(contest_id: int):
+    """Archive a completed contest."""
+    try:
+        contest = contest_manager.archive_contest(contest_id)
+        return {
+            "status": "success",
+            "message": f"Contest {contest_id} archived",
+            "contest": {
+                "id": contest.id,
+                "status": contest.status.value,
+                "file_path": contest.file_path
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.put("/api/contests/managed/{contest_id}/projection")
+async def update_contest_projection(contest_id: int, projection_id: Optional[int] = None):
+    """
+    Update the associated projection for a contest.
+
+    Args:
+        contest_id: Contest database ID
+        projection_id: Projection database ID (or null to unassign)
+    """
+    try:
+        contest = contest_manager.update_projection(contest_id, projection_id)
+        return {
+            "status": "success",
+            "message": f"Updated projection for contest {contest_id}",
+            "contest": {
+                "id": contest.id,
+                "name": contest.name,
+                "projection_id": contest.projection_id
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.get("/api/contests/{contest_id}")
@@ -609,19 +910,50 @@ async def get_portfolio_analysis(contest_id: str, username: str):
 
     # Get user lineup scores and ROI metrics
     user_lineups_data = []
-    total_expected_payout = 0.0
 
-    # For portfolio-level mean/median: calculate ROI for each iteration
+    # For portfolio-level calculations
     num_iterations = scores.shape[1]
-    portfolio_roi_per_iteration = []
-
     payout_structure = getattr(state, 'payout_structure', None)
+
+    # Build payout lookup array (used for both Expected ROI and Mean/Median ROI)
+    total_expected_payout = 0.0
+    portfolio_payouts_all = None
+    if payout_structure:
+        max_rank = max(max_r for _, max_r, _ in payout_structure)
+        payout_array = np.zeros(max_rank + 1)
+        for min_rank, max_rank, payout in payout_structure:
+            payout_array[min_rank:max_rank+1] = payout
+
+        # Calculate portfolio payout across ALL iterations (for Expected ROI)
+        # This correctly accounts for intra-portfolio competition
+        portfolio_payouts_all = np.zeros(num_iterations)
+        user_scores_all = scores[user_lineup_indices, :]
+
+        for idx_pos, idx in enumerate(user_lineup_indices):
+            # For this user lineup, calculate ranks across all iterations
+            beats_this_lineup = scores > user_scores_all[idx_pos]
+            ranks = beats_this_lineup.sum(axis=0) + 1
+
+            # Count ties for each iteration
+            score_diffs = np.abs(scores - user_scores_all[idx_pos])
+            ties_count = (score_diffs < 1e-9).sum(axis=0)
+
+            # Calculate payout per iteration
+            for iter_idx in range(num_iterations):
+                rank = int(ranks[iter_idx])
+                num_tied = int(ties_count[iter_idx])
+                if rank + num_tied <= len(payout_array):
+                    pooled_payout = payout_array[rank:rank+num_tied].sum()
+                    portfolio_payouts_all[iter_idx] += pooled_payout / num_tied if num_tied > 0 else 0.0
+
+        # Expected payout is the mean across all iterations
+        total_expected_payout = float(portfolio_payouts_all.mean())
 
     for idx in user_lineup_indices:
         lineup_scores = scores[idx, :]
         avg_score = float(avg_scores[idx])
 
-        # Calculate ROI if payout structure exists
+        # Calculate individual lineup ROI metrics (for display on lineup row)
         roi_metrics = None
         if payout_structure:
             from utils.payout_parser import calculate_roi_with_ties
@@ -632,7 +964,6 @@ async def get_portfolio_analysis(contest_id: str, username: str):
                 payout_structure=payout_structure,
                 entry_fee=state.entry_fee
             )
-            total_expected_payout += roi_metrics['expected_payout']
 
         # Use cached top 1% rate (pre-computed for performance)
         if state.cached_top_1pct_rates is not None:
@@ -642,7 +973,7 @@ async def get_portfolio_analysis(contest_id: str, username: str):
             num_lineups = scores.shape[0]
             top_1pct_cutoff = max(1, int(num_lineups * 0.01))
             ranks_per_iteration = (scores > lineup_scores).sum(axis=0) + 1
-            top_1pct_rate = (ranks_per_iteration <= top_1pct_cutoff).mean()
+            top_1pct_rate = float((ranks_per_iteration <= top_1pct_cutoff).mean())
 
         # Get player indices in this lineup
         player_indices = np.where(state.lineup_matrix[idx] == 1)[0]
@@ -667,8 +998,8 @@ async def get_portfolio_analysis(contest_id: str, username: str):
 
             players_data.append({
                 'name': player_name,
-                'position': player_row.get('Position', 'FLEX'),
-                'team': player_row.get('Team', 'Unknown'),
+                'position': str(player_row.get('Position', 'FLEX')),
+                'team': str(player_row.get('Team', 'Unknown')),
                 'current_score': float(player_sims[pidx, :].mean()),
                 'projection': float(player_row['Projection']),
                 'actual_points': player_actual,
@@ -678,61 +1009,31 @@ async def get_portfolio_analysis(contest_id: str, username: str):
         # Get projected score (pre-game)
         projected_score = float(state.pre_game_scores[idx, :].mean()) if state.pre_game_scores is not None else None
 
+        # Get win rate from cached values if available
+        if state.cached_win_rates is not None:
+            win_rate = float(state.cached_win_rates[idx])
+        else:
+            # Fallback to recalculation if cache is missing
+            max_scores_per_iteration = scores.max(axis=0)
+            win_rate = float((lineup_scores >= max_scores_per_iteration).mean())
+
         user_lineups_data.append({
             'lineup_index': int(idx),
-            'entry_id': state.entry_ids[idx],
             'avg_score': avg_score,
             'projected_score': projected_score,
             'actual_points': round(lineup_actual_points, 2),
             'top_1pct_rate': float(top_1pct_rate),
+            'win_rate': float(win_rate),
             'roi_metrics': roi_metrics,
             'players': players_data
         })
 
-    # Calculate portfolio-level mean/median ROI per iteration (sampled for speed)
-    if payout_structure:
-        # Build payout lookup array (supports up to max rank in payout structure)
-        max_rank = max(max_r for _, max_r, _ in payout_structure)
-        payout_array = np.zeros(max_rank + 1)
-        for min_rank, max_rank, payout in payout_structure:
-            payout_array[min_rank:max_rank+1] = payout
-
-        # Sample iterations for faster calculation (use 1000 samples for good accuracy with speed)
-        sample_size = min(1000, num_iterations)
-        if sample_size < num_iterations:
-            # Use deterministic sampling based on username for consistent results
-            seed = hash(username) % (2**32)
-            rng = np.random.RandomState(seed)
-            sample_indices = rng.choice(num_iterations, size=sample_size, replace=False)
-        else:
-            sample_indices = np.arange(num_iterations)
-
-        # Get user lineup scores (num_user_lineups × sample_size)
-        user_scores = scores[user_lineup_indices, :][:, sample_indices]
-        scores_sample = scores[:, sample_indices]
-
-        # Vectorized portfolio payout calculation
-        portfolio_payouts = np.zeros(sample_size)
-
-        for idx_pos, idx in enumerate(user_lineup_indices):
-            # For this user lineup, calculate ranks across sampled iterations
-            beats_this_lineup = scores_sample > user_scores[idx_pos]
-            ranks = beats_this_lineup.sum(axis=0) + 1
-
-            # Count ties for each iteration
-            score_diffs = np.abs(scores_sample - user_scores[idx_pos])
-            ties_count = (score_diffs < 1e-9).sum(axis=0)
-
-            # Vectorized payout calculation
-            for iter_idx in range(sample_size):
-                rank = int(ranks[iter_idx])
-                num_tied = int(ties_count[iter_idx])
-                if rank + num_tied <= len(payout_array):
-                    pooled_payout = payout_array[rank:rank+num_tied].sum()
-                    portfolio_payouts[iter_idx] += pooled_payout / num_tied if num_tied > 0 else 0.0
-
-        # Calculate ROI percentage for each iteration
-        portfolio_roi_per_iteration = ((portfolio_payouts - total_entry_fees) / total_entry_fees * 100).tolist()
+    # Calculate portfolio-level mean/median ROI using a sample (for performance)
+    portfolio_roi_per_iteration = []
+    if payout_structure and portfolio_payouts_all is not None:
+        # Use ALL iterations for mean/median to match Expected ROI
+        # (Previously sampled for performance, but now we prioritize accuracy)
+        portfolio_roi_per_iteration = ((portfolio_payouts_all - total_entry_fees) / total_entry_fees * 100).tolist()
 
     # Portfolio-level stats
     total_expected_roi = total_expected_payout - total_entry_fees
@@ -745,7 +1046,7 @@ async def get_portfolio_analysis(contest_id: str, username: str):
     # Calculate win probability (at least 1 lineup wins)
     max_scores_per_iteration = scores.max(axis=0)
     user_max_scores_per_iteration = scores[user_lineup_indices, :].max(axis=0)
-    portfolio_win_rate = (user_max_scores_per_iteration >= max_scores_per_iteration).mean()
+    portfolio_win_rate = float((user_max_scores_per_iteration >= max_scores_per_iteration).mean())
 
     # Best/worst lineups
     best_lineup_idx = user_lineup_indices[np.argmax([avg_scores[i] for i in user_lineup_indices])]
@@ -758,16 +1059,16 @@ async def get_portfolio_analysis(contest_id: str, username: str):
         'total_expected_payout': round(total_expected_payout, 2),
         'total_expected_roi': round(total_expected_roi, 2),
         'total_expected_roi_pct': round(total_expected_roi_pct, 2),
-        'mean_roi_pct': round(portfolio_mean_roi, 2) if portfolio_mean_roi is not None else None,
-        'median_roi_pct': round(portfolio_median_roi, 2) if portfolio_median_roi is not None else None,
-        'portfolio_win_rate': round(portfolio_win_rate * 100, 2),
+        'mean_roi_pct': float(round(portfolio_mean_roi, 2)) if portfolio_mean_roi is not None else None,
+        'median_roi_pct': float(round(portfolio_median_roi, 2)) if portfolio_median_roi is not None else None,
+        'portfolio_win_rate': float(round(portfolio_win_rate * 100, 2)),
         'best_lineup': {
-            'entry_id': state.entry_ids[best_lineup_idx],
-            'avg_score': round(avg_scores[best_lineup_idx], 2)
+            'entry_id': str(state.entry_ids[best_lineup_idx]),
+            'avg_score': float(round(avg_scores[best_lineup_idx], 2))
         },
         'worst_lineup': {
-            'entry_id': state.entry_ids[worst_lineup_idx],
-            'avg_score': round(avg_scores[worst_lineup_idx], 2)
+            'entry_id': str(state.entry_ids[worst_lineup_idx]),
+            'avg_score': float(round(avg_scores[worst_lineup_idx], 2))
         }
     }
 
@@ -788,13 +1089,13 @@ async def get_portfolio_analysis(contest_id: str, username: str):
             player_name = player_row['Name']
             player_exposure_data.append({
                 'name': player_name,
-                'position': player_row.get('Position', 'FLEX'),
-                'team': player_row.get('Team', 'Unknown'),
-                'user_exposure': round(user_exposure[idx], 1),
-                'field_exposure': round(field_exposure[idx], 1),
-                'exposure_diff': round(user_exposure[idx] - field_exposure[idx], 1),
+                'position': str(player_row.get('Position', 'FLEX')),
+                'team': str(player_row.get('Team', 'Unknown')),
+                'user_exposure': float(round(user_exposure[idx], 1)),
+                'field_exposure': float(round(field_exposure[idx], 1)),
+                'exposure_diff': float(round(user_exposure[idx] - field_exposure[idx], 1)),
                 'num_lineups': int(user_player_counts[idx]),
-                'avg_score': round(player_sims[idx, :].mean(), 2),
+                'avg_score': float(round(player_sims[idx, :].mean(), 2)),
                 'projected_score': round(float(player_row['Projection']), 2),
                 'actual_points': round(actual_player_points.get(player_name, 0.0), 2)
             })
@@ -860,13 +1161,16 @@ async def get_portfolio_analysis(contest_id: str, username: str):
             count1 = team_counts[team1]
             count2 = team_counts[team2]
 
-            # Create team-specific correlation keys (e.g., "5-1 KC", "1-5 JAX")
-            correlation_key1 = f"{count1}-{count2} {team1}"
-            correlation_key2 = f"{count2}-{count1} {team2}"
+            # Normalize: always put larger count first, track which team has more
+            if count1 >= count2:
+                dominant_team = team1
+                correlation_key = f"{count1}-{count2} {dominant_team}"
+            else:
+                dominant_team = team2
+                correlation_key = f"{count2}-{count1} {dominant_team}"
 
-            # Track both perspectives
-            game_correlation_stacks[correlation_key1] += 1
-            game_correlation_stacks[correlation_key2] += 1
+            # Count once per lineup (no double-counting)
+            game_correlation_stacks[correlation_key] += 1
 
     # Format stack data - only include if exposure is significant
     qb_stack_data = [
@@ -894,7 +1198,7 @@ async def get_portfolio_analysis(contest_id: str, username: str):
 
     # Parse game correlations to extract team info
     game_correlation_data = []
-    for corr, count in sorted(game_correlation_stacks.items(), key=lambda x: x[1], reverse=True):
+    for corr, count in game_correlation_stacks.items():
         # Parse "5-1 KC" into correlation="5-1" and team="KC"
         parts = corr.rsplit(' ', 1)  # Split from right to get last word as team
         if len(parts) == 2:
@@ -913,6 +1217,22 @@ async def get_portfolio_analysis(contest_id: str, username: str):
                 'count': count,
                 'exposure': round(count / num_entries * 100, 1)
             })
+
+    # Sort by correlation pattern (3-3, then 4-2, then 5-1), then by count
+    def correlation_sort_key(item):
+        pattern = item['correlation']
+        parts = pattern.split('-')
+        if len(parts) == 2:
+            try:
+                num1, num2 = int(parts[0]), int(parts[1])
+                # Sort order: 3-3 (difference=0), 4-2 (difference=2), 5-1 (difference=4)
+                difference = abs(num1 - num2)
+                return (difference, -item['count'])  # Sort by difference, then count descending
+            except ValueError:
+                pass
+        return (999, -item['count'])  # Unknown patterns go last
+
+    game_correlation_data.sort(key=correlation_sort_key)
 
     # ===== RETURN ALL DATA =====
     return {
@@ -1218,6 +1538,75 @@ async def test_live_stats():
     }
 
 
+@app.get("/api/debug/actual-points/{contest_id}")
+async def debug_actual_points(contest_id: str):
+    """Debug endpoint to check actual player points for a contest."""
+    state = state_manager.get_contest(contest_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail=f"Contest {contest_id} not found")
+
+    actual_points = getattr(state, 'actual_player_points', {})
+
+    # Also get what ESPN is returning
+    from services.live_stats_service import LiveStatsService
+    service = LiveStatsService()
+    espn_actual_points = service.get_actual_points(state.stokastic_df)
+
+    return {
+        "contest_id": contest_id,
+        "actual_player_points_count": len(actual_points),
+        "actual_player_points_sample": dict(list(actual_points.items())[:10]) if actual_points else {},
+        "espn_actual_points_count": len(espn_actual_points),
+        "espn_actual_points_sample": dict(list(espn_actual_points.items())[:10]) if espn_actual_points else {},
+        "has_mismatch": len(actual_points) != len(espn_actual_points)
+    }
+
+
+@app.get("/api/debug/name-matching/{contest_id}")
+async def debug_name_matching(contest_id: str):
+    """Debug endpoint to analyze name matching for a contest."""
+    state = state_manager.get_contest(contest_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail=f"Contest {contest_id} not found")
+
+    # Get ESPN stats
+    from services.espn_api import ESPNStatsAPI
+    from services.live_stats_service import LiveStatsService
+    from utils.player_mapper import PlayerNameMapper
+
+    espn_api = ESPNStatsAPI()
+    espn_stats = espn_api.get_all_live_stats()
+
+    # Get Stokastic player names
+    stokastic_names = state.stokastic_df['Name'].tolist()
+
+    # Try matching
+    mapper = PlayerNameMapper()
+    espn_players = {
+        name: {'team': stats['team']}
+        for name, stats in espn_stats.items()
+    }
+
+    matches = mapper.batch_match(espn_players, stokastic_names)
+
+    # Categorize results
+    matched = {k: v for k, v in matches.items() if v is not None}
+    unmatched = {k: v for k, v in matches.items() if v is None}
+
+    return {
+        "contest_id": contest_id,
+        "stokastic_player_count": len(stokastic_names),
+        "stokastic_players_sample": stokastic_names[:20],
+        "espn_player_count": len(espn_stats),
+        "espn_players": list(espn_stats.keys()),
+        "matched_count": len(matched),
+        "matched_players": matched,
+        "unmatched_count": len(unmatched),
+        "unmatched_players": list(unmatched.keys()),
+        "match_rate": (len(matched) / len(espn_stats) * 100) if espn_stats else 0
+    }
+
+
 # WebSocket endpoint for real-time updates
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -1361,23 +1750,352 @@ async def load_contest_from_files():
     }
 
 
-# Placeholder endpoints for Phase 4 (full contest upload/management)
-@app.post("/api/upload/stokastic")
-async def upload_stokastic():
-    """Upload Stokastic projections CSV. (Phase 4)"""
-    return {"message": "Not implemented - Phase 4"}
+# ===== CONTEST MANAGEMENT ENDPOINTS (Phase 4) =====
+
+from services.contest_manager import get_contest_manager
+from services.projection_manager import get_projection_manager
+from models.database import ContestStatus, SlateType
+from fastapi import UploadFile, File, Form
+
+contest_manager = get_contest_manager()
+projection_manager = get_projection_manager()
 
 
-@app.post("/api/upload/contest")
-async def upload_contest():
-    """Upload DraftKings contest CSV. (Phase 4)"""
-    return {"message": "Not implemented - Phase 4"}
+@app.post("/api/contests/upload")
+async def upload_contest_file(
+    file: UploadFile = File(...),
+    name: str = Form(...),
+    contest_date: str = Form(...),
+    entry_fee: float = Form(0.0),
+    projection_id: int = Form(None),
+    payout_text: str = Form(None)
+):
+    """
+    Upload a DraftKings contest CSV file.
+
+    Args:
+        file: Contest CSV file
+        name: User-friendly contest name
+        contest_date: Contest date (YYYY-MM-DD)
+        entry_fee: Entry fee per lineup
+        projection_id: Optional projection ID to associate
+        payout_text: Optional payout structure text from DK
+                    Example: "1st: $1000\n2nd-5th: $100"
+
+    Returns:
+        Contest metadata including ID and stats
+    """
+    import tempfile
+    import os
+
+    # Save uploaded file to temporary location
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.csv') as tmp:
+        content = await file.read()
+        tmp.write(content)
+        tmp_path = tmp.name
+
+    try:
+        # Upload contest using manager
+        contest = contest_manager.upload_contest(
+            file_path=tmp_path,
+            name=name,
+            contest_date=contest_date,
+            entry_fee=entry_fee,
+            projection_id=projection_id,
+            payout_text=payout_text
+        )
+
+        return {
+            "status": "success",
+            "message": "Contest uploaded successfully",
+            "contest": {
+                "id": contest.id,
+                "contest_id": contest.contest_id,
+                "name": contest.name,
+                "contest_date": contest.contest_date,
+                "slate_type": contest.slate_type.value,
+                "entry_fee": contest.entry_fee,
+                "total_entries": contest.total_entries,
+                "status": contest.status.value,
+                "uploaded_at": contest.uploaded_at.isoformat()
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        # Clean up temp file
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
 
-@app.post("/api/simulate")
-async def run_simulation_endpoint():
-    """Run Monte Carlo simulation. (Phase 4)"""
-    return {"message": "Not implemented - Phase 4"}
+# ===== PROJECTION MANAGEMENT ENDPOINTS =====
+
+@app.post("/api/projections/upload")
+async def upload_projection_file(
+    file: UploadFile = File(...),
+    name: str = Form(...),
+    projection_date: str = Form(...),
+    source: str = Form("Stokastic"),
+    slate_type: str = Form("Showdown"),
+    set_as_default: bool = Form(False)
+):
+    """
+    Upload a projection CSV file.
+
+    Args:
+        file: Projection CSV file
+        name: User-friendly projection name
+        projection_date: Projection date (YYYY-MM-DD)
+        source: Projection source (Stokastic, 4for4, etc.)
+        slate_type: Slate type (Main or Showdown)
+        set_as_default: If true, set as default for this date+slate
+
+    Returns:
+        Projection metadata including ID and stats
+    """
+    import tempfile
+    import os
+
+    # Convert slate_type to enum
+    try:
+        slate_enum = SlateType[slate_type.upper()]
+    except KeyError:
+        raise HTTPException(status_code=400, detail=f"Invalid slate_type: {slate_type}")
+
+    # Save uploaded file to temporary location
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.csv') as tmp:
+        content = await file.read()
+        tmp.write(content)
+        tmp_path = tmp.name
+
+    try:
+        # Upload projection using manager
+        projection = projection_manager.upload_projection(
+            file_path=tmp_path,
+            name=name,
+            projection_date=projection_date,
+            source=source,
+            slate_type=slate_enum,
+            set_as_default=set_as_default
+        )
+
+        return {
+            "status": "success",
+            "message": "Projection uploaded successfully",
+            "projection": {
+                "id": projection.id,
+                "name": projection.name,
+                "projection_date": projection.projection_date,
+                "source": projection.source,
+                "slate_type": projection.slate_type.value,
+                "num_players": projection.num_players,
+                "is_default": projection.is_default,
+                "uploaded_at": projection.uploaded_at.isoformat()
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        # Clean up temp file
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+
+@app.get("/api/projections")
+async def list_projections(
+    date: str = None,
+    slate_type: str = None,
+    source: str = None,
+    defaults_only: bool = False,
+    limit: int = 100,
+    offset: int = 0
+):
+    """
+    List projections with filtering.
+
+    Args:
+        date: Filter by projection date (YYYY-MM-DD)
+        slate_type: Filter by slate type (Main, Showdown)
+        source: Filter by source
+        defaults_only: If true, only return default projections
+        limit: Maximum results
+        offset: Pagination offset
+
+    Returns:
+        List of projections with metadata
+    """
+    # Convert slate_type to enum
+    slate_enum = None
+    if slate_type:
+        try:
+            slate_enum = SlateType[slate_type.upper()]
+        except KeyError:
+            raise HTTPException(status_code=400, detail=f"Invalid slate_type: {slate_type}")
+
+    projections = projection_manager.list_projections(
+        date=date,
+        slate_type=slate_enum,
+        source=source,
+        defaults_only=defaults_only,
+        limit=limit,
+        offset=offset
+    )
+
+    return {
+        "projections": [
+            {
+                "id": p.id,
+                "name": p.name,
+                "projection_date": p.projection_date,
+                "source": p.source,
+                "slate_type": p.slate_type.value,
+                "num_players": p.num_players,
+                "is_default": p.is_default,
+                "uploaded_at": p.uploaded_at.isoformat()
+            }
+            for p in projections
+        ],
+        "count": len(projections),
+        "limit": limit,
+        "offset": offset
+    }
+
+
+@app.get("/api/projections/{projection_id}")
+async def get_projection(projection_id: int):
+    """Get projection details by ID."""
+    projection = projection_manager.get_projection(projection_id)
+    if not projection:
+        raise HTTPException(status_code=404, detail=f"Projection {projection_id} not found")
+
+    return {
+        "id": projection.id,
+        "name": projection.name,
+        "projection_date": projection.projection_date,
+        "source": projection.source,
+        "slate_type": projection.slate_type.value,
+        "num_players": projection.num_players,
+        "is_default": projection.is_default,
+        "file_path": projection.file_path,
+        "uploaded_at": projection.uploaded_at.isoformat(),
+        "contests_using": len(projection.contests)
+    }
+
+
+@app.delete("/api/projections/{projection_id}")
+async def delete_projection(projection_id: int, delete_file: bool = True):
+    """
+    Delete a projection from database.
+
+    Args:
+        projection_id: Projection database ID
+        delete_file: If true, also delete the CSV file
+    """
+    try:
+        projection_manager.delete_projection(projection_id, delete_file=delete_file)
+        return {"status": "success", "message": f"Projection {projection_id} deleted"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/projections/{projection_id}/set-default")
+async def set_default_projection(projection_id: int):
+    """Set a projection as the default for its date+slate_type."""
+    try:
+        projection = projection_manager.set_default(projection_id)
+        return {
+            "status": "success",
+            "message": f"Projection {projection_id} set as default",
+            "projection": {
+                "id": projection.id,
+                "name": projection.name,
+                "projection_date": projection.projection_date,
+                "slate_type": projection.slate_type.value,
+                "is_default": projection.is_default
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/projections/stats/summary")
+async def get_projection_stats():
+    """Get summary statistics for projections."""
+    return projection_manager.get_summary_stats()
+
+
+# ============================================================================
+# Contest Loading Endpoints
+# ============================================================================
+
+from services.contest_loader import get_contest_loader
+
+contest_loader = get_contest_loader()
+
+
+@app.post("/api/contests/managed/{contest_id}/load")
+async def load_contest(
+    contest_id: int,
+    force_mode: str = None,
+    auto_start: bool = False
+):
+    """
+    Load contest into ContestStateManager with smart historical/live detection.
+
+    Args:
+        contest_id: Contest database ID
+        force_mode: Override auto-detection (HISTORICAL or LIVE)
+        auto_start: If True, automatically start monitoring for live contests
+
+    Returns:
+        Load status and details
+    """
+    try:
+        result = contest_loader.load_contest(
+            contest_id=contest_id,
+            force_mode=force_mode,
+            auto_start=auto_start
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load contest: {str(e)}")
+
+
+@app.post("/api/contests/managed/{contest_id}/unload")
+async def unload_contest(contest_id: int):
+    """Unload contest from ContestStateManager."""
+    try:
+        result = contest_loader.unload_contest(contest_id)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to unload contest: {str(e)}")
+
+
+@app.get("/api/contests/managed/loaded")
+async def get_loaded_contest():
+    """Get information about currently loaded contest."""
+    info = contest_loader.get_loaded_contest_info()
+    if info is None:
+        return {"loaded": False, "contest": None}
+    return {"loaded": True, "contest": info}
+
+
+@app.post("/api/contests/managed/{contest_id}/complete")
+async def complete_contest(contest_id: int):
+    """Mark contest as completed (after games finish)."""
+    try:
+        result = contest_loader.complete_contest(contest_id)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to complete contest: {str(e)}")
 
 
 @app.get("/api/results/{contest_id}")
