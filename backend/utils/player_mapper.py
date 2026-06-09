@@ -8,6 +8,40 @@ Handles common naming differences:
 - Periods: "A.J. Brown" vs "AJ Brown"
 """
 
+"""
+Deegs comments 11/2/2025:
+I've found that a simple uniform name cleaning function can do everything you're looking for without the overhead of a whole PlayerNameMapper.
+If you just by default pipe the clean_name function into any data loading and collating, you should have very few issues with name mismatches.
+There still might be a few conversions required for names that are unaligned, but a simple dict lookup should take care of it.
+An initial run with a try: except: should catch the exceptions and determine the conversion dict.
+I haven't done anything else besides write the function right here, so PlayerNameMapper is still in use everywhere.
+"""
+
+import unidecode
+
+CONVERSIONS = {
+#     Name issues that need manual overrides
+
+}
+
+def clean_name(name: str) -> str:
+    """
+    Standardizes name across all sources/sites.
+    Names different across FanDuel, DraftKings, BasketballReference, RotoGrinders, ESPN, etc.
+    Takes in a name and returns just the first and last name, removing any foreign characters, suffixes, and periods.
+
+    Perfect for __post_init__() in dataclasses or to chain with .apply with pd.read_csv()
+    """
+    return CONVERSIONS.get(
+        name,
+        unidecode.unidecode(' '.join(name.split(' ')[:2]).replace('.', '').strip())
+    )
+
+
+##################################################
+# Previous code
+##################################################
+
 import json
 import re
 from pathlib import Path
